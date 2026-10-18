@@ -1,0 +1,14 @@
+# Arquivos de configuração local do VS Code
+.vscode/
+
+# Configurações locais com chaves/IDs de API
+.env
+
+# Arquivo HTML gerado dinamicamente
+mapa_desmatamento.html
+
+# Cache e ambientes virtuais do Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/

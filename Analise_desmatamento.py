@@ -5,15 +5,22 @@ import ee
 import folium
 import webbrowser
 import math
+import os
 
 # =============== 1: Inicialização do Earth Engine ========================
-ID_PROJETO = 'projetodesmatamento-511717'
+PROJECT_ID = os.getenv("GEE_PROJECT_ID", None)
 
 try:
-    ee.Initialize(project=ID_PROJETO)
+    if PROJECT_ID:
+        ee.Initialize(project=PROJECT_ID)
+    else:
+        ee.Initialize()  # Usa as credenciais locais padrão do usuário
 except Exception:
     ee.Authenticate()
-    ee.Initialize(project=ID_PROJETO)
+    if PROJECT_ID:
+        ee.Initialize(project=PROJECT_ID)
+    else:
+        ee.Initialize()
 
 # =============== 2: Criação de interface gráfica =========================
 ctk.set_appearance_mode("Dark")
