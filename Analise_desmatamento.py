@@ -6,21 +6,25 @@ import folium
 import webbrowser
 import math
 import os
+from dotenv import load_dotenv
 
 # =============== 1: Inicialização do Earth Engine ========================
-PROJECT_ID = os.getenv("GEE_PROJECT_ID", None)
+# Carrega as variáveis do arquivo .env
+load_dotenv()
+
+# Obtém o ID do projeto a partir do .env
+PROJECT_ID = os.getenv("GEE_PROJECT_ID")
+
+if not PROJECT_ID:
+    raise ValueError(
+        "GEE_PROJECT_ID não foi encontrado! Verifique se o arquivo .env existe na mesma pasta"
+    )
 
 try:
-    if PROJECT_ID:
-        ee.Initialize(project=PROJECT_ID)
-    else:
-        ee.Initialize()  # Usa as credenciais locais padrão do usuário
+    ee.Initialize(project=PROJECT_ID)
 except Exception:
     ee.Authenticate()
-    if PROJECT_ID:
-        ee.Initialize(project=PROJECT_ID)
-    else:
-        ee.Initialize()
+    ee.Initialize(project=PROJECT_ID)
 
 # =============== 2: Criação de interface gráfica =========================
 ctk.set_appearance_mode("Dark")
