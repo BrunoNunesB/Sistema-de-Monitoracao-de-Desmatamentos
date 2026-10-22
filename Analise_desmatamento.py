@@ -7,6 +7,11 @@ import webbrowser
 import math
 import os
 from dotenv import load_dotenv
+from filtro_ruido import (
+    PIXELS_MINIMOS, OBSERVACOES_MINIMAS,
+    mascarar_nuvens_scl, pixels_com_observacoes_suficientes,
+    remover_ruido_conectado, calcular_areas,
+)
 
 # =============== 1: Inicialização do Earth Engine ========================
 # Carrega as variáveis do arquivo .env
@@ -87,11 +92,16 @@ class AppDesmatamento(ctk.CTk):
         self.frame_resultado = ctk.CTkFrame(self.frame_menu, fg_color="#1f242d")
         self.frame_resultado.pack(fill="x", padx=15, pady=5)
 
-        self.label_resultado_titulo = ctk.CTkLabel(self.frame_resultado, text="Área Desmatada:", font=ctk.CTkFont(size=12))
+        self.label_resultado_titulo = ctk.CTkLabel(self.frame_resultado, text="Área Desmatada (filtrada):", font=ctk.CTkFont(size=12))
         self.label_resultado_titulo.pack(pady=(8, 2))
 
         self.label_area = ctk.CTkLabel(self.frame_resultado, text="0.00 ha", font=ctk.CTkFont(size=20, weight="bold"), text_color="#e63946")
-        self.label_area.pack(pady=(0, 8))
+        self.label_area.pack(pady=(0, 4))
+        self.label_comparacao = ctk.CTkLabel(
+            self.frame_resultado, text="Bruta: — | Ruído removido: —",
+            font=ctk.CTkFont(size=11)
+        )
+        self.label_comparacao.pack(pady=(0, 8))
 
         # Botão para abrir sobreposição completa
         self.btn_abrir_mapa = ctk.CTkButton(
@@ -133,10 +143,24 @@ class AppDesmatamento(ctk.CTk):
 
     # Recolhendo dados informados e validando informações
     def processar_analise(self):
-        local_texto = self.entry_local.get()
-        raio_km = float(self.entry_raio.get()) if self.entry_raio.get() else 10.0
+        self.btn_abrir_mapa.configure(state="disabled")
+        local_texto = self.entry_local.get().strip()
+        try:
+            raio_km = float(self.entry_raio.get()) if self.entry_raio.get() else 10.0
+            if not math.isfinite(raio_km) or raio_km <= 0:
+                raise ValueError("Raio inválido")
+        except ValueError:
+            self.label_status.configure(text="Erro: informe um raio válido em km.", text_color="red")
+            return
+
         ano_inicio = self.combo_ano_inicio.get()
         ano_fim = self.combo_ano_fim.get()
+        if int(ano_inicio) >= int(ano_fim):
+            self.label_status.configure(text="Erro: ano final deve ser posterior ao inicial.", text_color="red")
+            return
+        if not local_texto:
+            self.label_status.configure(text="Erro: informe uma localidade.", text_color="red")
+            return
 
         self.label_status.configure(text="A buscar coordenadas...", text_color="yellow")
         self.update()
@@ -161,49 +185,107 @@ class AppDesmatamento(ctk.CTk):
         sentinel = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') # reflectância de superfície harmonizada
                     .filterBounds(aoi)
                     .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 10)) # Removendo imagens com +10% de nuvens em cena
+                    .map(mascarar_nuvens_scl)
                     .map(adicionar_ndvi))
 
-        ndvi_antes = sentinel.filterDate(f'{ano_inicio}-06-01', f'{ano_inicio}-09-30').median().clip(aoi).select('NDVI') # Sempre pegando entre Julho e Setembro por ser período de seca (Inverno)
-        ndvi_depois = sentinel.filterDate(f'{ano_fim}-06-01', f'{ano_fim}-09-30').median().clip(aoi).select('NDVI') # Sempre pegando entre Julho e Setembro por ser período de seca (Inverno)
+        # Período de junho a setembro: a data final é exclusiva.
+        colecao_antes = sentinel.filterDate(f'{ano_inicio}-06-01', f'{ano_inicio}-10-01')
+        colecao_depois = sentinel.filterDate(f'{ano_fim}-06-01', f'{ano_fim}-10-01')
+        if colecao_antes.size().getInfo() == 0 or colecao_depois.size().getInfo() == 0:
+            self.label_status.configure(
+                text="Sem cenas Sentinel-2 nos anos selecionados.", text_color="red"
+            )
+            return
+
+        observacoes_suficientes = pixels_com_observacoes_suficientes(
+            colecao_antes, colecao_depois, OBSERVACOES_MINIMAS
+        )
+        ndvi_antes = (
+            colecao_antes.median().clip(aoi).select('NDVI')
+            .updateMask(observacoes_suficientes)
+        )
+        ndvi_depois = (
+            colecao_depois.median().clip(aoi).select('NDVI')
+            .updateMask(observacoes_suficientes)
+        )
 
         delta_ndvi = ndvi_depois.subtract(ndvi_antes) # Calcula variação NDVI pixel a pixel
         queda_severa = delta_ndvi.lte(-0.35) # Identifica onde houve queda de NDVI <= -0.35
         era_floresta = ndvi_antes.gte(0.4) # Vê se local era área vegetada no inicio (>= 0.4)
-        desmatamento_mascara = queda_severa.And(era_floresta) # Combina as duas condições
-
-        # Calculando a area em Hectares
-        area_imagem = desmatamento_mascara.multiply(ee.Image.pixelArea())
-        soma_area = area_imagem.reduceRegion(
-            reducer=ee.Reducer.sum(),
-            geometry=aoi,
-            scale=10,
-            maxPixels=1e9
+        mascara_original = (
+            queda_severa.And(era_floresta)
+            .rename('desmatamento')
+            .updateMask(observacoes_suficientes)
         )
-        
+        self.label_status.configure(text="Filtrando ruídos (5 pixels)...", text_color="yellow")
+        self.update()
+        # Fixar a contagem na grade nativa de 10 m da banda B4.
+        projecao_10m = ee.Image(colecao_antes.first()).select('B4').projection()
+        desmatamento_mascara = remover_ruido_conectado(
+            mascara_original, projecao_10m, minimo_pixels=PIXELS_MINIMOS
+        )
+
+        # As áreas usam as mesmas máscaras exibidas no mapa.
         try:
-            area_m2 = soma_area.get('NDVI').getInfo()
-            area_ha = (area_m2 / 10000.0) if area_m2 is not None else 0.0
+            areas = calcular_areas(
+                mascara_original, desmatamento_mascara,
+                observacoes_suficientes, aoi
+            )
+            area_ha = areas['filtrada_ha']
             self.label_area.configure(text=f"{area_ha:.2f} ha")
-        except Exception:
-            area_ha = 0.0
+            self.label_comparacao.configure(
+                text=(f"Bruta: {areas['bruta_ha']:.2f} ha | "
+                      f"Ruído removido: {areas['removida_ha']:.2f} ha")
+            )
+        except Exception as erro:
             self.label_area.configure(text="N/A")
+            self.label_comparacao.configure(text="Não foi possível calcular a área.")
+            self.label_status.configure(text=f"Falha na análise: {erro}", text_color="red")
+            return
 
-        # Gerar ficheiro Folium com sobreposição transparente
-        map_id_2022 = ndvi_antes.getMapId({'min': 0, 'max': 0.8, 'palette': ['red', 'yellow', 'green']})
-        map_id_2024 = ndvi_depois.getMapId({'min': 0, 'max': 0.8, 'palette': ['red', 'yellow', 'green']})
-        map_id_desm = desmatamento_mascara.selfMask().getMapId({'palette': ['red']})
+        # Duas camadas independentes permitem comparar máscara original e filtrada.
+        try:
+            map_id_antes = ndvi_antes.getMapId({
+                'min': 0, 'max': 0.8, 'palette': ['red', 'yellow', 'green']
+            })
+            map_id_depois = ndvi_depois.getMapId({
+                'min': 0, 'max': 0.8, 'palette': ['red', 'yellow', 'green']
+            })
+            map_id_original = mascara_original.selfMask().getMapId({
+                'palette': ['ffbf00']
+            })
+            map_id_filtrado = desmatamento_mascara.selfMask().getMapId({
+                'palette': ['e63946']
+            })
 
-        m = folium.Map(location=[lat, lon], zoom_start=12, tiles=None)
-        folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            attr='Esri', name='Imagem de Satélite', overlay=False
-        ).add_to(m)
-
-        folium.TileLayer(tiles=map_id_2022['tile_fetcher'].url_format, attr='GEE', name=f'NDVI {ano_inicio}', overlay=True).add_to(m)
-        folium.TileLayer(tiles=map_id_2024['tile_fetcher'].url_format, attr='GEE', name=f'NDVI {ano_fim}', overlay=True).add_to(m)
-        folium.TileLayer(tiles=map_id_desm['tile_fetcher'].url_format, attr='GEE', name='Área Desmatada', overlay=True).add_to(m)
-        folium.LayerControl(collapsed=False).add_to(m)
-        m.save(self.mapa_html_path)
+            m = folium.Map(location=[lat, lon], zoom_start=12, tiles=None)
+            folium.TileLayer(
+                tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                attr='Esri', name='Imagem de Satélite', overlay=False
+            ).add_to(m)
+            folium.TileLayer(
+                tiles=map_id_antes['tile_fetcher'].url_format,
+                attr='GEE', name=f'NDVI {ano_inicio}', overlay=True, show=False
+            ).add_to(m)
+            folium.TileLayer(
+                tiles=map_id_depois['tile_fetcher'].url_format,
+                attr='GEE', name=f'NDVI {ano_fim}', overlay=True, show=False
+            ).add_to(m)
+            folium.TileLayer(
+                tiles=map_id_original['tile_fetcher'].url_format,
+                attr='GEE', name='Detecção original (sem filtro)',
+                overlay=True, show=False
+            ).add_to(m)
+            folium.TileLayer(
+                tiles=map_id_filtrado['tile_fetcher'].url_format,
+                attr='GEE', name=f'Detecção filtrada (mín. {PIXELS_MINIMOS} pixels)',
+                overlay=True, show=True
+            ).add_to(m)
+            folium.LayerControl(collapsed=False).add_to(m)
+            m.save(self.mapa_html_path)
+        except Exception as erro:
+            self.label_status.configure(text=f"Falha ao gerar mapa: {erro}", text_color="red")
+            return
 
         # 4. Atualizar janela
         self.mapa_widget.set_position(lat, lon)
@@ -225,10 +307,10 @@ class AppDesmatamento(ctk.CTk):
             return coords_list
 
         self.mapa_widget.set_polygon(criar_circulo(lat, lon, raio_km), outline_color="#e63946", fill_color=None, border_width=2)
-        self.mapa_widget.set_marker(lat, lon, text=f"{local_texto}\nRaio: {raio_km}km | Desmatado: {area_ha:.2f} ha")
+        self.mapa_widget.set_marker(lat, lon, text=f"{local_texto}\nRaio: {raio_km}km | Desmatado (filtrado): {area_ha:.2f} ha")
 
         self.btn_abrir_mapa.configure(state="normal")
-        self.label_status.configure(text="Concluído com sucesso!", text_color="#2ba84a")
+        self.label_status.configure(text=f"Concluído: original × filtrada ({PIXELS_MINIMOS} px).", text_color="#2ba84a")
 
     #Abre o mapa no navegador
     def abrir_mapa_html(self):
