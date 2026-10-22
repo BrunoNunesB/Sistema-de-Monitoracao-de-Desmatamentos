@@ -1,0 +1,6 @@
+customtkinter
+tkintermapview
+geopy
+earthengine-api
+folium
+python-dotenv
