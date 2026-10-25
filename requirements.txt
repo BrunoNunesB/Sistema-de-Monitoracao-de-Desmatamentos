@@ -1,6 +1,4 @@
+opencv-python
+numpy
 customtkinter
-tkintermapview
-geopy
-earthengine-api
-folium
-python-dotenv
+pillow

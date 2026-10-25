@@ -1,54 +1,39 @@
-# Remoção equilibrada de ruídos — 5 pixels
+# Estudo de Deteção de Mudanças em Imagens de Satélite com OpenCV
 
-Implementação para a aplicação Python de monitoramento de desmatamento baseada em Sentinel-2 e Google Earth Engine.
+Aplicação desktop desenvolvida em Python para estudo e demonstração de técnicas de **Processamento Digital de Imagens (PDI)** e **Visão Computacional**, focada na identificação de alterações de cobertura vegetal (desmatamento/mudança de solo agrícola) através da comparação de pares de imagens ("Antes" vs "Depois").
 
-## O que muda
+## Tecnologias Utilizadas
 
-- A banda SCL elimina por pixel classes inválidas, sombras, nuvens, cirrus e neve antes de calcular o NDVI.
-- Cada pixel precisa de pelo menos 3 observações válidas **em ambos os períodos** (ano inicial e final).
-- A detecção original preserva os limiares existentes: NDVI inicial >= 0.4 e variação <= -0.35.
-- O módulo `filtro_ruido.py` remove grupos positivos com **menos de 5 pixels 8-conectados**, medidos em uma projeção B4 Sentinel-2 de 10 m.
-- O cálculo de área informa hectares **brutos, filtrados e removidos**.
-- O mapa HTML Folium contém as camadas independentes **Detecção original (sem filtro)** (amarelo, desativada) e **Detecção filtrada (mín. 5 pixels)** (vermelho, ativada). Assim é possível comparar as máscaras na mesma área.
+* **Python 3.14**
+* **OpenCV (`opencv-python`)**: Pipeline de PDI (ExG, conversão HSV, limiarização por Otsu, operações morfológicas, contornos e desenho de áreas).
+* **NumPy**: Manipulação matricial dos canais BGR.
+* **CustomTkinter**: Interface gráfica moderna disposta em grid 2x2.
+* **Pillow (PIL)**: Conversão e renderização de imagens na interface.
 
-Esta etapa realiza as operações no próprio Google Earth Engine; **OpenCV não é necessário**.
+## Pipeline de Processamento (PDI)
 
-## Instalação e execução
+O algoritmo executa localmente as seguintes etapas:
 
-1. Tenha Python e um projeto habilitado no Google Earth Engine.
-2. Instale as dependências: `python -m pip install -r requirements.txt`.
-3. Crie um arquivo `.env` com `GEE_PROJECT_ID=seu-id-do-projeto`; o arquivo real não deve ser versionado.
-4. Execute `python Analise_desmatamento.py`.
-5. Selecione local, raio, ano inicial e final, depois clique em **Analisar Desmatamento**.
-6. Clique em **Ver mapa de desmatamento no Navegador**; use o controle de camadas para alternar entre original e filtrada.
+1. **Leitura e Redimensionamento**: Carregamento em formato BGR nativo do OpenCV e compatibilização de dimensões.
+2. **Índice Excess Green (ExG)**: Cálculo do índice (2G - R - B) para destacar a vegetação em cada período.
+3. **Subtração de Verde**: Diferença direta entre os índices para isolar a perda de vegetação.
+4. **Máscara Urbana (Espaço HSV)**: Filtragem por saturação de cor para ignorar zonas urbanas acinzentadas e vias.
+5. **Limiarização por Otsu**: Binarização automática do resultado filtrado.
+6. **Morfologia Matemática**: Operações de abertura (`MORPH_OPEN`) e fechamento (`MORPH_CLOSE`) com kernel estipulado para remoção de ruídos de alta frequência.
+7. **Filtragem de Contornos**: Deteção de regiões alteradas e destaque visual com preenchimento semi-transparente.
 
-## Testes offline
+## Instalação e Execução
 
+## 1. Como Obter as Imagens de Entrada (Google Earth Pro)
+
+1. Abra o **Google Earth Pro** no computador e navegue até à área de interesse.
+2. Anote a **Altitude do Ponto de Visão** exibida no canto inferior direito (ex: `Alt. ponto de visão 3.00 km` = `3000 m`).
+2. Ative o **Histórico de Imagens** no ícone de relógio no menu superior (`Ctrl + Alt + S`).
+3. Selecione uma data antiga na linha do tempo (ex: 2020) e clique em **Ficheiro -> Guardar -> Guardar Imagem...**.
+4. Em **Opções do Mapa**, desmarque todos os elementos visuais (escala, bússola, legenda) e guarde como `antes.jpg`.
+5. **Sem alterar o zoom ou a posição do mapa**, altere a linha do tempo para uma data recente e guarde como `depois.jpg`.
+
+## 2. Clonar o repositório e instalar as dependências
 ```bash
-python -m unittest discover -s tests -v
-python -m compileall -q Analise_desmatamento.py filtro_ruido.py
+python -m pip install -r requirements.txt
 ```
-
-Os testes verificam a construção das expressões e os parâmetros, usando dublês da API: **não confirmam a precisão das imagens reais**.
-
-## Parâmetros
-
-Em `filtro_ruido.py`:
-
-- `PIXELS_MINIMOS = 5`
-- `OBSERVACOES_MINIMAS = 3`
-- Classes SCL descartadas: `1, 3, 7, 8, 9, 10, 11`.
-- Filtro inicial de cenas: `CLOUDY_PIXEL_PERCENTAGE < 10`.
-- Datas: de 1º de junho até antes de 1º de outubro.
-- Contagem de vizinhança: 8 conexões.
-- Escala de redução de área: 10 m.
-
-## Limitações e validação recomendada
-
-- A execução real com Earth Engine requer autenticação e acesso remoto, e **ainda não foi validada com imagens reais**.
-- A SCL é de 20 m; sua máscara é aplicada ao NDVI de 10 m com reamostragem implícita.
-- A projeção da primeira imagem Sentinel-2 do ano inicial é usada como referência para a conectividade. Em áreas que cruzem fusos UTM ou regiões extensas, reavalie essa escolha.
-- A operação `reproject` pode ser cara para áreas grandes.
-- Cinco pixels de 10 x 10 m correspondem nominalmente a 0,05 ha; o cálculo oficial da aplicação utiliza `ee.Image.pixelArea()`.
-- Um filtro de 5 pixels pode remover clareiras verdadeiras pequenas. Valide sua precisão contra áreas de referência antes de usar os resultados para conclusões científicas ou operacionais.
-- Queda de NDVI não distingue por si só desmatamento de mudanças fenológicas, manejo agrícola ou outras perturbações.
